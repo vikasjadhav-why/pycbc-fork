@@ -966,3 +966,151 @@ def marginalize_likelihood(sh, hh,
     if return_peak:
         return vloglr, maxv, maxl
     return vloglr
+
+class LogL():
+    def __init__(self, phi, psi, shp, shm, hphp, hmhm, hmhp):
+        ## Initialize the A,B,C,D co-efficients that define the surface
+        ## 
+        self.data_signal = {} ## Am
+        self.constant = {}    ## B
+        self.cross_modes = {}    ## C
+        self.cross_modes_pol = {}    ##D
+        self.phi_arr, self.psi_arr = numpy.broadcast_arrays(
+            numpy.asarray(phi, dtype=float),
+            numpy.asarray(psi, dtype=float)
+        )
+        self.modes = sorted(shp.keys())
+        for m in self.modes:
+            self.data_signal[m] = shp[m] + numpy.conj(shm[m])
+            self.constant[m] = -0.5*(hphp[(m,m)] + hmhm[(m,m)])
+        for (m,n) in hphp.keys():
+            if n==m:
+                continue
+            k=n-m
+            self.cross_modes[k] = self.cross_modes.get(k,0) + \
+                                  (-(hphp[m,n]+hmhm[n,m]))
+        for (m,n) in hmhp.keys():
+            p=n+m
+            self.cross_modes_pol[p] = self.cross_modes_pol.get(p,0) + (-hmhp[m,n])
+
+    def get_value(self, phi, psi, order):
+        """   Returns the value of the partial derivative of LogL of 
+        order (m,n) at the value phi,psi
+        m is the order of partial phi
+        n is the oder of partial psi"""
+        phi_order, psi_order = int(order[0]), int(order[1])
+        phi_arr, psi_arr = numpy.broadcast_arrays(
+            numpy.asarray(phi, dtype=float),
+            numpy.asarray(psi, dtype=float)
+        )
+
+        total = numpy.zeros(phi_arr.shape, dtype=complex)
+
+        dirac_psi = int(psi_order==0)
+        dirac_phi = int(phi_order==0)
+
+        for m in self.data_signal.keys():
+            total += ((1j*m)**phi_order)*((2j**psi_order))*\
+                self.data_signal[m] * numpy.exp(1j*(m*phi_arr + 2*psi_arr))
+        for m in self.constant.keys():
+            total += dirac_phi*dirac_psi*self.constant[m]
+        for k in self.cross_modes.keys():
+            total+= dirac_psi*((1j*k)**phi_order)*\
+                self.cross_modes[k]*numpy.exp(1j*(k*phi_arr))
+        for p in self.cross_modes_pol.keys():
+            total+= ((1j*p)**phi_order)*((4j**psi_order))*\
+                self.cross_modes_pol[p]*numpy.exp(1j*(p*phi_arr + 4*psi_arr))
+
+        value = numpy.real(total)
+
+        return value if value.shape != () and value.size > 1 else float(value)
+
+
+    def get_hessian(self, phi, psi):
+        """" Calculates the determinant of the hessian
+         at (phi,psi) """
+        lphiphi = self.get_value(phi, psi, order=(2,0))
+        lpsipsi = self.get_value(phi, psi, order=(0,2))
+        lphipsi = self.get_value(phi, psi, order=(1,1))
+
+        return (lphiphi*lpsipsi) - lphipsi**2
+
+    def corrections(self, order=6):
+        return 1
+
+
+class Peaks():
+    def __init__(self, shp, shm, hphp, hmhm, hmhp):
+        self.data_signal = {}
+        self.inner_products = (shp, shm, hphp, hmhm, hmhp)
+        for m in shp.keys():
+            self.data_signal[m] = shp[m] + numpy.conj(shm[m])
+        self.top_modes = sorted((k for k in self.data_signal if k > 0),
+                                             key=lambda k: abs(self.data_signal[k]), reverse=True)[:2]
+
+    def two_mode(self, use_modes=None):
+        if use_modes==None:
+            modes = self.top_modes
+        elif use_modes != None:
+            modes = use_modes
+        m, n = modes[0], modes[1]
+        angle_m, angle_n = (numpy.angle(self.data_signal[m])%(2*numpy.pi)), (numpy.angle(self.data_signal[n])%(2*numpy.pi))
+        print(angle_m, angle_n)
+        phi = ((angle_n-angle_m)/(m-n))%(2*numpy.pi)
+        psi = ((angle_m*n - angle_n*m)/(2*(m-n)))%(2*numpy.pi)
+        return (phi, psi)
+
+    def newton_raphson(self, use_modes=None, tol=1e-7, maxiter=50):
+        phi, psi = self.two_mode(use_modes)
+        for i in range(maxiter):
+            loglr = LogL(*self.inner_products)
+            dlphi, dlpsi = loglr.get_value(phi, psi, order=(1,0)), loglr.get_value(phi, psi, order=(0,1))
+            d2lphiphi = loglr.get_value(phi, psi, order=(2,0))
+            d2lpsipsi = loglr.get_value(phi, psi, order=(0,2))
+            d2lphipsi = loglr.get_value(phi, psi, order=(1,1))
+            det = (d2lphiphi*d2lpsipsi) - (d2lphipsi)**2
+
+            dphi = (d2lpsipsi*dlphi-d2lphipsi*dlpsi)/det
+            dpsi = (d2lphiphi*dlpsi-d2lphipsi*dlphi)/det
+
+            phi = phi - dphi
+            psi = psi - dpsi
+
+            if abs(dphi) < tol and abs(dpsi) < tol:
+                break
+        print(f'{i+1} iterations to reach tolerance {tol}')
+        return (phi, psi)
+
+
+
+def hm_marginalize(shp, shm, hphp, hmhm, hmhp,
+                   higher_mode=False,
+                   discrete_peaks=False,
+                   continous_peaks=False,
+                   grid=False, grid_npoints=2000):
+    """  Marginalizes the likelihood over phase and polarization"""
+    ## Needs 2 cases to be implemented here
+    ## 1 A higher mode present - (use_higher_mode = True)
+    ## 2 Only the |m|=2 mode present but -m mode is high - (discrete_peaks = True)
+    ## 3 Only the |m|=2 mode present but low inclination - (continous_peaks = True)
+    lr_surface = LogL(shp, shm, hphp, hmhm, hmhp)
+    if higher_mode==True:
+        peaks = Peaks(shp, shm, hphp, hmhm, hmhp).newton_raphson()
+        phi0, psi0 = peaks
+        lr_at_peak = lr_surface.get_value(phi0, psi0)
+        hessian = numpy.abs(lr_surface.get_hessian(phi0, psi0))
+        log_prior_vol = 2*numpy.log(2*numpy.pi)
+        log_vol = numpy.log(2*numpy.pi) + lr_at_peak - 0.5*numpy.log(hessian) - log_prior_vol
+        log_vol += numpy.log(2) ## Account for two symmetric peaks
+        correction_factors = lr_surface.corrections()
+        return log_vol*correction_factors
+    elif grid==True:
+        phi_grid = numpy.linspace(0, 2*numpy.pi, grid_npoints)
+        psi_grid = numpy.linspace(0, 2*numpy.pi, grid_npoints)
+        PHI, PSI = numpy.meshgrid(phi_grid, psi_grid)
+        log_prior_vol = 2*numpy.log(2*numpy.pi)
+        lr_grid = lr_surface.get_value(PHI, PSI)
+        lr_flat = lr_grid.flatten()
+        da = (2*numpy.pi/grid_npoints)**2
+        log_vol = logsumexp(lr_flat, b=da) - log_prior_vol
+        return log_vol
