@@ -54,6 +54,11 @@ def add_custom_waveform(approximant, function, domain,
         raise ValueError("Invalid domain ({}), should be "
                          "'time' or 'frequency'".format(domain))
 
+def add_custom_waveform_modes(approximant, function, domain,
+                              sequence=False, has_det_response=False,
+                              force=False,):
+    """ Make custom waveform modes available to pycbc """
+    pass
 
 def add_length_estimator(approximant, function):
     """ Add length estimator for an approximant
