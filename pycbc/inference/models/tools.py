@@ -968,17 +968,13 @@ def marginalize_likelihood(sh, hh,
     return vloglr
 
 class LogL():
-    def __init__(self, phi, psi, shp, shm, hphp, hmhm, hmhp):
+    def __init__(self, shp, shm, hphp, hmhm, hmhp):
         ## Initialize the A,B,C,D co-efficients that define the surface
         ## 
         self.data_signal = {} ## Am
         self.constant = {}    ## B
         self.cross_modes = {}    ## C
         self.cross_modes_pol = {}    ##D
-        self.phi_arr, self.psi_arr = numpy.broadcast_arrays(
-            numpy.asarray(phi, dtype=float),
-            numpy.asarray(psi, dtype=float)
-        )
         self.modes = sorted(shp.keys())
         for m in self.modes:
             self.data_signal[m] = shp[m] + numpy.conj(shm[m])
@@ -1055,7 +1051,7 @@ class Peaks():
             modes = use_modes
         m, n = modes[0], modes[1]
         angle_m, angle_n = (numpy.angle(self.data_signal[m])%(2*numpy.pi)), (numpy.angle(self.data_signal[n])%(2*numpy.pi))
-        print(angle_m, angle_n)
+        #print(angle_m, angle_n)
         phi = ((angle_n-angle_m)/(m-n))%(2*numpy.pi)
         psi = ((angle_m*n - angle_n*m)/(2*(m-n)))%(2*numpy.pi)
         return (phi, psi)
@@ -1079,12 +1075,14 @@ class Peaks():
             if abs(dphi) < tol and abs(dpsi) < tol:
                 break
         print(f'{i+1} iterations to reach tolerance {tol}')
+        print(phi,psi)
         return (phi, psi)
 
 
 
 def hm_marginalize(shp, shm, hphp, hmhm, hmhp,
                    higher_mode=False,
+                   use_modes = False,
                    discrete_peaks=False,
                    continous_peaks=False,
                    grid=False, grid_npoints=2000):
@@ -1095,9 +1093,9 @@ def hm_marginalize(shp, shm, hphp, hmhm, hmhp,
     ## 3 Only the |m|=2 mode present but low inclination - (continous_peaks = True)
     lr_surface = LogL(shp, shm, hphp, hmhm, hmhp)
     if higher_mode==True:
-        peaks = Peaks(shp, shm, hphp, hmhm, hmhp).newton_raphson()
+        peaks = Peaks(shp, shm, hphp, hmhm, hmhp).newton_raphson(use_modes=use_modes)
         phi0, psi0 = peaks
-        lr_at_peak = lr_surface.get_value(phi0, psi0)
+        lr_at_peak = lr_surface.get_value(phi0, psi0,order=(0,0))
         hessian = numpy.abs(lr_surface.get_hessian(phi0, psi0))
         log_prior_vol = 2*numpy.log(2*numpy.pi)
         log_vol = numpy.log(2*numpy.pi) + lr_at_peak - 0.5*numpy.log(hessian) - log_prior_vol
@@ -1109,7 +1107,7 @@ def hm_marginalize(shp, shm, hphp, hmhm, hmhp,
         psi_grid = numpy.linspace(0, 2*numpy.pi, grid_npoints)
         PHI, PSI = numpy.meshgrid(phi_grid, psi_grid)
         log_prior_vol = 2*numpy.log(2*numpy.pi)
-        lr_grid = lr_surface.get_value(PHI, PSI)
+        lr_grid = lr_surface.get_value(PHI, PSI,order=(0,0))
         lr_flat = lr_grid.flatten()
         da = (2*numpy.pi/grid_npoints)**2
         log_vol = logsumexp(lr_flat, b=da) - log_prior_vol

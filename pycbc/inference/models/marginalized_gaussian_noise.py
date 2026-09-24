@@ -865,6 +865,9 @@ class AnalyticHMPolPhase(GaussianNoise):
             ## valid for the non-precessing case
             for (l, m), (ulm, vlm) in wf_modes.items():
                 glm = get_glm(l, m, params['inclination'])
+                ## Note that vlm = -hx accrording to the output
+                ## And this makes hplus ~ h+ + ihx := hleft
+                ## and hminus ~ h+ - hx := hright
                 hplus_lm = (ulm - 1j*vlm) * numpy.exp(-1j*m*numpy.pi/2) * glm
                 hminus_lm = (ulm + 1j*vlm) * numpy.exp(1j*m*numpy.pi/2) * glm
                 hplus_m[m] += fplus*hplus_lm/2
@@ -925,6 +928,6 @@ class AnalyticHMPolPhase(GaussianNoise):
         ## phase_only, pol_only, phase_pol with these options passed to the function
         return hm_marginalize(*self.inner_products())
 
-    def _unmarg_lr(self, phi, psi, order=(0, 0)):
+    def unmarg_lr(self, phi, psi, order=(0, 0)):
         ## To replicate the unmarginalized surface and also it's derivatives
         return LogL(*self.inner_products()).get_value(phi, psi, order=order)
