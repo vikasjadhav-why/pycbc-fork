@@ -22,14 +22,15 @@ import itertools
 import logging
 import numpy
 from scipy import special
-
+from collections import defaultdict
 from pycbc.waveform import generator
 from pycbc.detector import Detector
 from .gaussian_noise import (BaseGaussianNoise,
                              create_waveform_generator,
                              GaussianNoise, catch_waveform_error)
 from .tools import marginalize_likelihood, DistMarg
-
+from pycbc.waveform.waveform_modes import get_glm
+from pycbc.filter.matchedfilter import overlap_cplx
 
 class MarginalizedPhaseGaussianNoise(GaussianNoise):
     r"""The likelihood is analytically marginalized over phase.
@@ -806,3 +807,132 @@ class MarginalizedHMPolPhase(BaseGaussianNoise):
         setattr(self._current_stats, 'maxl_polarization', self.pol[idx])
         setattr(self._current_stats, 'maxl_phase', self.phase[idx])
         return float(lr_total)
+
+class AnalyticHMPolPhase(GaussianNoise):
+    name = 'analytic_pol_phase'
+
+    def __init__(self, variable_params, data, low_frequency_cutoff, sample_rate=2048, **kwargs):
+        super().__init__(variable_params, data, low_frequency_cutoff, **kwargs)
+
+        df = data[self.detectors[0]].delta_f
+        self.df = df
+        self.sample_rate = float(sample_rate)
+        flen = int(round(sample_rate / self.df) / 2 + 1)
+        self.flen = flen
+
+        self.det = {}
+        for ifo in self.data:
+            self.det[ifo] = Detector(ifo)
+            # self.data[ifo].resize(flen)  ## Removed: generator already ensures data
+                                            ## and signal have the same length
+
+        self.waveform_generator = create_waveform_generator(
+            self.variable_params, self.data,
+            waveform_transforms=self.waveform_transforms,
+            recalibration=self.recalibration,
+            generator_class=generator.FDomainDetFrameModesGenerator,
+            gates=self.gates, **self.static_params
+        )
+
+    def inner_products(self, ref_pol=0):
+        params = self.current_params
+        wfs = self.waveform_generator.generate(**params)
+
+        mode_amplitudes = {}
+        shl, shr = {}, {}
+        hlhl, hrhr, hrhl = {}, {}, {}
+
+        for ifo, wf_modes in wfs.items():
+            ##NOTE: If I need to write this to include phase only with fixed polarization
+            ## I could implement something like this
+            ## if self.polmarg == True:
+            ##    ref_pol = 0
+            ## else:
+            ##    ref_pol = params['polarization']
+            ##
+            fp, fc = self.det[ifo].antenna_pattern(
+                params['ra'], params['dec'], ref_pol, params['tc']
+            )
+            fleft, fright = fp - 1j*fc, fp + 1j*fc
+
+            hl_m, hr_m = defaultdict(int), defaultdict(int)
+            ## NOTE: The multiplication by e^{i*m*pi/2} is to account 
+            ## for the phase definition offset present for Nrsur and SEOB
+            ## They evalueate the spin weighted spherical harmonic at
+            ## (h+ - ihx)(phi) ~ Y_{lm}(i,pi/2 - phi)
+            for (l, m), (ulm, vlm) in wf_modes.items():
+                glm = get_glm(l, m, params['inclination'])
+                ## Note that vlm = -hx accrording to the output
+                hl_lm = (ulm - 1j*vlm) * numpy.exp(-1j*m*numpy.pi/2) * glm
+                hr_lm = (ulm + 1j*vlm) * numpy.exp(1j*m*numpy.pi/2) * glm
+                hl_m[m] += fleft*hl_lm/2
+                hr_m[m] += fright*hr_lm/2
+
+            mode_amplitudes[ifo] = (hl_m, hr_m)
+
+            ##define inner product function for an ifo here to make less lines later
+            def _inner_product(a, b, _ifo=ifo):
+                return overlap_cplx(
+                    a, b, psd=self.psds[_ifo],
+                    low_frequency_cutoff=self.low_frequency_cutoff[_ifo],
+                    normalized=False
+                )
+
+            ## calculate <data, signal>
+            shl[ifo], shr[ifo] = {}, {}
+            for m in hl_m:
+                shl[ifo][m] = _inner_product(self.data[ifo], hl_m[m])
+                shr[ifo][m] = _inner_product(self.data[ifo], hr_m[m])
+
+            ## calculate <signal,signal> terms
+            hlhl[ifo], hrhr[ifo], hrhl[ifo] = {}, {}, {}
+            ## Ordering maintained such that the phase factor is exp(+i|n-m|)
+            ## for the decomposition convention of
+            ## hplus[m] ~ exp{+im}, hminus[m] ~ exp{-im}  
+            for n, m in itertools.combinations_with_replacement(hl_m.keys(), 2):  # n >= m
+                hlhl[ifo][(m, n)] = _inner_product(hl_m[m], hl_m[n])
+                hrhr[ifo][(n, m)] = _inner_product(hr_m[n], hr_m[m])
+                hrhl[ifo][(m, n)] = _inner_product(hr_m[m], hl_m[n])
+                hrhl[ifo][(n, m)] = _inner_product(hr_m[n], hl_m[m])
+
+        ## sum the inner products over detectors to get network totals
+        shl_net, shr_net = defaultdict(complex), defaultdict(complex)
+        hlhl_net, hrhr_net, hrhl_net = (
+            defaultdict(complex), defaultdict(complex), defaultdict(complex)
+        )
+
+        for ifo in wfs:
+            for m, val in shl[ifo].items():
+                shl_net[m] += val
+            for m, val in shr[ifo].items():
+                shr_net[m] += val
+            for key, val in hlhl[ifo].items():
+                hlhl_net[key] += val
+            for key, val in hrhr[ifo].items():
+                hrhr_net[key] += val
+            for key, val in hrhl[ifo].items():
+                hrhl_net[key] += val
+
+        return (
+            dict(shl_net), dict(shr_net),
+            dict(hlhl_net), dict(hrhr_net), dict(hrhl_net)
+        )
+       
+    def pol_added_inner_product(self,ref_pol):
+        (shl, shr,
+        hlhl, hrhr, hrhl ) = self.inner_products(ref_pol=0)
+        sHm, HmHm, HmHn = defaultdict(complex),defaultdict(complex),defaultdict(complex)
+        for m in shl:
+            sHm[m] = shl[m]*numpy.exp(2j*ref_pol) + shr[-m]*numpy.exp(-2j*ref_pol)
+        ##TODO : add the polarization dependence for the cross signal products as well
+        ## HmHn = hlmhln + hr_{-m}hr_{-n} + hlmhr_{-n}e^{-i4\psi} + hr_{-m}hl_{n}e^{i4\psi}
+        ## return (sHm, HmHm, HmHn)
+        pass
+    #def _loglr(self):
+        ## TODO: The marginalizaiton function needs to have a case options
+        ## phase_only, pol_only, phase_pol with these options passed to the function
+        #return hm_marginalize(*self.inner_products())
+
+    #def unmarg_lr(self, phi, psi, order=(0, 0)):
+        ## To replicate the unmarginalized surface and also it's derivatives
+        #return LogL(*self.inner_products()).get_value(phi, psi, order=order)
