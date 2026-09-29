@@ -936,3 +936,101 @@ class AnalyticHMPolPhase(GaussianNoise):
     #def unmarg_lr(self, phi, psi, order=(0, 0)):
         ## To replicate the unmarginalized surface and also it's derivatives
         #return LogL(*self.inner_products()).get_value(phi, psi, order=order)
+
+class HMPhaseMarginalize(GaussianNoise):
+    name = 'hm_phase_marginalize'
+
+    def __init__(self, variable_params, data, low_frequency_cutoff, sample_rate=2048, **kwargs):
+        super().__init__(variable_params, data, low_frequency_cutoff, **kwargs)
+
+        df = data[self.detectors[0]].delta_f
+        self.df = df
+        self.sample_rate = float(sample_rate)
+        flen = int(round(sample_rate / self.df) / 2 + 1)
+        self.flen = flen
+
+        self.det = {}
+        for ifo in self.data:
+            self.det[ifo] = Detector(ifo)
+            # self.data[ifo].resize(flen)  ## Removed: generator already ensures data
+                                            ## and signal have the same length
+
+        self.waveform_generator = create_waveform_generator(
+            self.variable_params, self.data,
+            waveform_transforms=self.waveform_transforms,
+            recalibration=self.recalibration,
+            generator_class=generator.FDomainDetFrameModesGenerator,
+            gates=self.gates, **self.static_params
+        )
+
+    def inner_products(self,use_modes=None):
+        params = self.current_params
+        wfs = self.waveform_generator.generate(**params)
+
+        shm  = {}
+        hmhn = {}
+
+        for ifo, wf_modes in wfs.items():
+            ##NOTE: If I need to write this to include phase only with fixed polarization
+            ## I could implement something like this
+            ## if self.polmarg == True:
+            ##    ref_pol = 0
+            ## else:
+            ##    ref_pol = params['polarization']
+            ##
+            fp, fc = self.det[ifo].antenna_pattern(
+                params['ra'], params['dec'], params['polarization'], params['tc']
+            )
+            fleft, fright = fp - 1j*fc, fp + 1j*fc
+            if use_modes==None:
+                modes_to_use = wf_modes.keys()
+            else:
+                modes_to_use = use_modes
+            hm = defaultdict(int)
+            ## NOTE: The multiplication by e^{i*m*pi/2} is to account 
+            ## for the phase definition offset present for Nrsur and SEOB
+            ## They evalueate the spin weighted spherical harmonic at
+            ## (h+ - ihx)(phi) ~ Y_{lm}(i,pi/2 - phi)
+            for (l, m) in modes_to_use:
+                glm = get_glm(l, m, params['inclination'])
+                ulm,vlm = wf_modes[(l,m)]
+                ## Note that vlm = -hx accrording to the output
+                hl_lm = (ulm - 1j*vlm) * numpy.exp(-1j*m*numpy.pi/2) * glm
+                hr_lm = (ulm + 1j*vlm) * numpy.exp(1j*m*numpy.pi/2) * glm
+                hm[m] += fleft*hl_lm/2
+                hm[-m] += fright*hr_lm/2
+
+            
+
+            ##define inner product function for an ifo here to make less lines later
+            def _inner_product(a, b, _ifo=ifo):
+                return overlap_cplx(
+                    a, b, psd=self.psds[_ifo],
+                    low_frequency_cutoff=self.low_frequency_cutoff[_ifo],
+                    normalized=False
+                )
+
+            ## calculate <data, signal>
+            shm[ifo]={}
+            for m in hm:
+                shm[ifo][m] = _inner_product(self.data[ifo], hm[m])
+
+            ## calculate <signal,signal> terms
+            hmhn[ifo]={}
+            ## Ordering such that ip(m,n) and n >= m
+            ## f  
+            for m, n in itertools.combinations_with_replacement(sorted(hm.keys()), 2):  # n >= m
+                print(m,n)
+                hmhn[ifo][(m, n)] = _inner_product(hm[m], hm[n])
+
+        ## sum the inner products over detectors to get network totals
+        shm_net= defaultdict(complex)
+        hmhn_net = defaultdict(complex)
+
+        for ifo in wfs:
+            for m, val in shm[ifo].items():
+                shm_net[m] += val
+            for key, val in hmhn[ifo].items():
+                hmhn_net[key] += val
+
+        return (shm_net, hmhn_net)
