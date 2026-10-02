@@ -1020,7 +1020,6 @@ class HMPhaseMarginalize(GaussianNoise):
             ## Ordering such that ip(m,n) and n >= m
             ## f  
             for m, n in itertools.combinations_with_replacement(sorted(hm.keys()), 2):  # n >= m
-                print(m,n)
                 hmhn[ifo][(m, n)] = _inner_product(hm[m], hm[n])
 
         ## sum the inner products over detectors to get network totals
