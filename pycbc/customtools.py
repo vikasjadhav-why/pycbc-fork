@@ -1,6 +1,6 @@
 from pycbc.workflow import WorkflowConfigParser
 import h5py
-
+import numpy
 
 def create_parser_from_injection(injection_file, data_file, model_file, **kwargs):
     """Create a WorkflowConfigParser instance that updates static_params section
@@ -40,3 +40,27 @@ def create_parser_from_injection(injection_file, data_file, model_file, **kwargs
     for key, value in kwargs.items():
         cp.add_options_to_section('model', [(key, str(value))])
     return cp
+
+def loglr_surface(model,phi,custom_modes=None):
+    shm,hmhn = model.inner_products(custom_modes)
+    sh_phi = 0
+    for m in shm:
+        sh_phi+= numpy.real(shm[m]*numpy.exp(1j*m*phi))
+    hh_cross = 0
+    hh_self = 0
+    for (m,n) in hmhn:
+        if m==n:
+            hh_self+=numpy.real(hmhn[(m,n)]/2)
+        else:
+            hh_cross+=numpy.real(hmhn[(m,n)]*numpy.exp(1j*(n-m)*phi))
+    return sh_phi - hh_cross - hh_self
+
+def gaussian_model_surface(model,phi):
+    """  
+    Returns the model evaluated at all points in phi
+    """
+    surface = numpy.zeros(len(phi))
+    for (i,p) in enumerate(phi):
+        model.update(coa_phase=p)
+        surface[i]=model.loglr
+    return surface
