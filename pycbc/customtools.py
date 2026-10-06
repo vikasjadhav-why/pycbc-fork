@@ -1,7 +1,7 @@
 from pycbc.workflow import WorkflowConfigParser
-from pycbc.inference.models import read_from_config
 import h5py
 import numpy
+
 def create_parser_from_injection(injection_file, data_file, model_file, **kwargs):
     """Create a WorkflowConfigParser instance that updates static_params section
     by reading it from the injection file.
@@ -64,27 +64,3 @@ def gaussian_model_surface(model,phi):
         model.update(coa_phase=p)
         surface[i]=model.loglr
     return surface
-def create_model_from_injection(injection_file,data_config,model_config):
-    """
-    Custom function ONLY for the hm_marg model. Creates 
-    and runs a dummy update so the methods in the model can be 
-    used.
-    Inputs:
-    ----------------
-    injection_file : the path to the injection file
-    data_config : path to the config file containing data settings
-    model_config : path the the config file specifying the model
-
-    Ouputs:
-    ---------------
-    hm_model : an instantiated HMPhaseMarginalize object  
-    """
-    hm_model = read_from_config(
-    create_parser_from_injection(
-        injection_file=injection_file,
-        data_file=data_config,
-        model_file=model_config
-        )
-    )
-    hm_model.update(coa_phase=0) ##HACK: To update params in current params. Does not change any behaviour
-    return hm_model
